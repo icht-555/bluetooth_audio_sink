@@ -5,8 +5,9 @@ project(bluetooth_audio_sink LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_executable(bluetooth_audio_sink
+add_executable(bluetooth_audio_sink WIN32
     src/main.cpp
 )
 
@@ -23,5 +24,7 @@ else()
     target_compile_options(bluetooth_audio_sink PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-target_link_libraries(bluetooth_audio_sink PRIVATE windowsapp)
-
+target_link_libraries(bluetooth_audio_sink PRIVATE
+    comctl32
+    windowsapp
+)
