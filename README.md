@@ -86,3 +86,8 @@ cmake --build build --config Release
 - `src/app_window.*`: Win32 窗口、控件和托盘交互
 - `src/audio_sink_controller.*`: 设备枚举、连接建立、断开和状态事件转发
 - `src/app_messages.h`: UI 与控制器之间共享的消息和载荷结构
+
+## BTW
+
+- 完全由ai构建
+
