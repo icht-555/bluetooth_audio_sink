@@ -2,7 +2,10 @@
 
 #include <windows.h>
 
+#include <memory>
 #include <string>
+
+#include <winrt/base.h>
 
 class AudioSinkController
 {
@@ -21,7 +24,17 @@ public:
 
 private:
     struct Impl;
-    Impl* impl_{ nullptr };
+    static winrt::fire_and_forget EnumerateDevicesCoroutine(
+        std::shared_ptr<Impl> impl,
+        HWND window,
+        std::wstring preferredDeviceId);
+    static winrt::fire_and_forget ConnectCoroutine(
+        std::shared_ptr<Impl> impl,
+        HWND window,
+        std::wstring deviceId,
+        std::wstring deviceName);
 
-    Impl& EnsureImpl();
+    std::shared_ptr<Impl> impl_;
+
+    std::shared_ptr<Impl> EnsureImpl();
 };

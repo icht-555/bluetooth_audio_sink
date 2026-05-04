@@ -88,20 +88,137 @@ struct AudioSinkController::Impl
     bool connected{ false };
 };
 
+winrt::fire_and_forget AudioSinkController::EnumerateDevicesCoroutine(
+    std::shared_ptr<Impl> impl,
+    HWND window,
+    std::wstring preferredDeviceId)
+{
+    try
+    {
+        auto const selector = audio::AudioPlaybackConnection::GetDeviceSelector();
+        auto const collection = co_await devices::DeviceInformation::FindAllAsync(selector);
+
+        auto result = std::make_unique<DeviceEnumerationResult>();
+        result->preferredDeviceId = std::move(preferredDeviceId);
+        result->devices.reserve(collection.Size());
+
+        for (auto const& item : collection)
+        {
+            result->devices.push_back(DeviceEntry{
+                ToWideString(item.Name()),
+                ToWideString(item.Id())
+            });
+        }
+
+        impl->busy = false;
+        PostPayload(window, kMsgDevicesEnumerated, std::move(result));
+    }
+    catch (winrt::hresult_error const& ex)
+    {
+        auto result = std::make_unique<DeviceEnumerationResult>();
+        result->preferredDeviceId = std::move(preferredDeviceId);
+        result->error = FormatWinRtError(ex);
+
+        impl->busy = false;
+        PostPayload(window, kMsgDevicesEnumerated, std::move(result));
+    }
+}
+
+winrt::fire_and_forget AudioSinkController::ConnectCoroutine(
+    std::shared_ptr<Impl> impl,
+    HWND window,
+    std::wstring deviceId,
+    std::wstring deviceName)
+{
+    try
+    {
+        if (impl->connection)
+        {
+            if (impl->hasStateChangedToken)
+            {
+                impl->connection.StateChanged(impl->stateChangedToken);
+                impl->hasStateChangedToken = false;
+            }
+
+            impl->connection.Close();
+            impl->connection = nullptr;
+        }
+
+        impl->connected = false;
+
+        auto connection = audio::AudioPlaybackConnection::TryCreateFromId(winrt::hstring(deviceId));
+        if (!connection)
+        {
+            auto result = std::make_unique<ConnectionResult>();
+            result->status = L"Failed to create connection";
+            result->detail = std::move(deviceName);
+
+            impl->busy = false;
+            impl->connected = false;
+            PostPayload(window, kMsgConnectionCompleted, std::move(result));
+            co_return;
+        }
+
+        auto const stateChangedToken = connection.StateChanged(
+            [window](audio::AudioPlaybackConnection const& sender, winrt::Windows::Foundation::IInspectable const&)
+            {
+                auto detail = std::make_unique<std::wstring>(L"State: " + ToWideString(sender.State()));
+                PostPayload(window, kMsgConnectionStateChanged, std::move(detail));
+            });
+
+        co_await connection.StartAsync();
+        auto const openResult = co_await connection.OpenAsync();
+
+        auto result = std::make_unique<ConnectionResult>();
+        impl->busy = false;
+
+        if (openResult.Status() != audio::AudioPlaybackConnectionOpenResultStatus::Success)
+        {
+            connection.StateChanged(stateChangedToken);
+            connection.Close();
+
+            impl->connected = false;
+            result->status = L"Connection failed";
+            result->detail = ToWideString(openResult.Status());
+            PostPayload(window, kMsgConnectionCompleted, std::move(result));
+            co_return;
+        }
+
+        impl->connection = connection;
+        impl->stateChangedToken = stateChangedToken;
+        impl->hasStateChangedToken = true;
+        impl->connected = true;
+
+        result->success = true;
+        result->status = L"Connected";
+        result->detail = L"Phone audio should now play through the PC output device.";
+        PostPayload(window, kMsgConnectionCompleted, std::move(result));
+    }
+    catch (winrt::hresult_error const& ex)
+    {
+        auto result = std::make_unique<ConnectionResult>();
+        result->status = L"Connection failed";
+        result->detail = FormatWinRtError(ex);
+
+        impl->busy = false;
+        impl->connected = false;
+        PostPayload(window, kMsgConnectionCompleted, std::move(result));
+    }
+}
+
 AudioSinkController::~AudioSinkController()
 {
     Disconnect();
-    delete impl_;
 }
 
-AudioSinkController::Impl& AudioSinkController::EnsureImpl()
+std::shared_ptr<AudioSinkController::Impl> AudioSinkController::EnsureImpl()
 {
     if (!impl_)
     {
-        impl_ = new Impl();
+        impl_ = std::make_shared<Impl>();
     }
 
-    return *impl_;
+    return impl_;
 }
 
 bool AudioSinkController::busy() const noexcept
@@ -138,129 +255,24 @@ void AudioSinkController::Disconnect()
 
 void AudioSinkController::EnumerateDevicesAsync(HWND window, std::wstring preferredDeviceId)
 {
-    auto& impl = EnsureImpl();
-    if (impl.busy)
+    auto impl = EnsureImpl();
+    if (impl->busy)
     {
         return;
     }
 
-    impl.busy = true;
-
-    auto task = [this, window, preferredDeviceId = std::move(preferredDeviceId)]() -> winrt::fire_and_forget
-    {
-        try
-        {
-            auto const selector = audio::AudioPlaybackConnection::GetDeviceSelector();
-            auto const collection = co_await devices::DeviceInformation::FindAllAsync(selector);
-
-            auto result = std::make_unique<DeviceEnumerationResult>();
-            result->preferredDeviceId = preferredDeviceId;
-            result->devices.reserve(collection.Size());
-
-            for (auto const& item : collection)
-            {
-                result->devices.push_back(DeviceEntry{
-                    ToWideString(item.Name()),
-                    ToWideString(item.Id())
-                });
-            }
-
-            EnsureImpl().busy = false;
-            PostPayload(window, kMsgDevicesEnumerated, std::move(result));
-        }
-        catch (winrt::hresult_error const& ex)
-        {
-            auto result = std::make_unique<DeviceEnumerationResult>();
-            result->preferredDeviceId = preferredDeviceId;
-            result->error = FormatWinRtError(ex);
-
-            EnsureImpl().busy = false;
-            PostPayload(window, kMsgDevicesEnumerated, std::move(result));
-        }
-    };
-
-    task();
+    impl->busy = true;
+    EnumerateDevicesCoroutine(std::move(impl), window, std::move(preferredDeviceId));
 }
 
 void AudioSinkController::ConnectAsync(HWND window, std::wstring deviceId, std::wstring deviceName)
 {
-    auto& impl = EnsureImpl();
-    if (impl.busy)
+    auto impl = EnsureImpl();
+    if (impl->busy)
     {
         return;
     }
 
-    impl.busy = true;
-
-    auto task =
-        [this, window, deviceId = std::move(deviceId), deviceName = std::move(deviceName)]() -> winrt::fire_and_forget
-    {
-        try
-        {
-            Disconnect();
-
-            auto connection = audio::AudioPlaybackConnection::TryCreateFromId(winrt::hstring(deviceId));
-            if (!connection)
-            {
-                auto result = std::make_unique<ConnectionResult>();
-                result->status = L"Failed to create connection";
-                result->detail = deviceName;
-
-                auto& currentImpl = EnsureImpl();
-                currentImpl.busy = false;
-                currentImpl.connected = false;
-                PostPayload(window, kMsgConnectionCompleted, std::move(result));
-                co_return;
-            }
-
-            auto const stateChangedToken = connection.StateChanged(
-                [window](audio::AudioPlaybackConnection const& sender, winrt::Windows::Foundation::IInspectable const&)
-                {
-                    auto detail = std::make_unique<std::wstring>(L"State: " + ToWideString(sender.State()));
-                    PostPayload(window, kMsgConnectionStateChanged, std::move(detail));
-                });
-
-            co_await connection.StartAsync();
-            auto const openResult = co_await connection.OpenAsync();
-
-            auto result = std::make_unique<ConnectionResult>();
-            auto& currentImpl = EnsureImpl();
-            currentImpl.busy = false;
-
-            if (openResult.Status() != audio::AudioPlaybackConnectionOpenResultStatus::Success)
-            {
-                connection.StateChanged(stateChangedToken);
-                connection.Close();
-
-                currentImpl.connected = false;
-                result->status = L"Connection failed";
-                result->detail = ToWideString(openResult.Status());
-                PostPayload(window, kMsgConnectionCompleted, std::move(result));
-                co_return;
-            }
-
-            currentImpl.connection = connection;
-            currentImpl.stateChangedToken = stateChangedToken;
-            currentImpl.hasStateChangedToken = true;
-            currentImpl.connected = true;
-
-            result->success = true;
-            result->status = L"Connected";
-            result->detail = L"Phone audio should now play through the PC output device.";
-            PostPayload(window, kMsgConnectionCompleted, std::move(result));
-        }
-        catch (winrt::hresult_error const& ex)
-        {
-            auto result = std::make_unique<ConnectionResult>();
-            result->status = L"Connection failed";
-            result->detail = FormatWinRtError(ex);
-
-            auto& currentImpl = EnsureImpl();
-            currentImpl.busy = false;
-            currentImpl.connected = false;
-            PostPayload(window, kMsgConnectionCompleted, std::move(result));
-        }
-    };
-
-    task();
+    impl->busy = true;
+    ConnectCoroutine(std::move(impl), window, std::move(deviceId), std::move(deviceName));
 }
