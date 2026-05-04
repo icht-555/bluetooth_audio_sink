@@ -79,3 +79,10 @@ cmake --build build --config Release
 - 右键托盘图标可打开菜单
 - 点击窗口右上角关闭按钮不会退出程序，而是隐藏到托盘
 - 只有托盘菜单里的 `Exit` 会真正退出进程
+
+## 代码结构
+
+- `src/main.cpp`: 进程入口与 WinRT / 公共控件初始化
+- `src/app_window.*`: Win32 窗口、控件和托盘交互
+- `src/audio_sink_controller.*`: 设备枚举、连接建立、断开和状态事件转发
+- `src/app_messages.h`: UI 与控制器之间共享的消息和载荷结构
