@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(bluetooth_audio_sink WIN32
+    app.rc
+    resource.h
     src/app_messages.h
     src/audio_sink_controller.cpp
     src/audio_sink_controller.h

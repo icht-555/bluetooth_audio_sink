@@ -1,9 +1,25 @@
 #include "app_window.h"
 
+#include "../resource.h"
+
 #include <commctrl.h>
 #include <shellapi.h>
 
 #include <memory>
+
+namespace
+{
+HICON LoadAppIcon(HINSTANCE instance)
+{
+    auto* icon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_APP_ICON));
+    if (!icon)
+    {
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+
+    return icon;
+}
+} // namespace
 
 AppWindow::AppWindow(HINSTANCE instance)
     : instance_(instance)
@@ -64,7 +80,8 @@ bool AppWindow::Register()
     windowClass.cbSize = sizeof(WNDCLASSEXW);
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance_;
-    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    windowClass.hIcon = LoadAppIcon(instance_);
+    windowClass.hIconSm = windowClass.hIcon;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     windowClass.lpszClassName = kWindowClassName;
@@ -224,7 +241,7 @@ void AppWindow::ShowTrayMenu()
 void AppWindow::CreateChildControls()
 {
     font_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    trayIcon_ = LoadIconW(nullptr, IDI_APPLICATION);
+    trayIcon_ = LoadAppIcon(instance_);
 
     deviceCombo_ = CreateWindowExW(
         0,
