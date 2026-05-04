@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 
 #include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.h>
@@ -7,7 +8,6 @@
 #include <winrt/Windows.Media.Audio.h>
 #include <winrt/base.h>
 
-#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -22,6 +22,8 @@ namespace
 constexpr wchar_t kWindowClassName[] = L"BluetoothAudioSinkWindow";
 constexpr wchar_t kWindowTitle[] = L"Bluetooth Audio Sink";
 constexpr UINT kMsgConnectionStateChanged = WM_APP + 1;
+constexpr UINT kMsgTrayIcon = WM_APP + 2;
+constexpr UINT kTrayIconId = 1;
 
 constexpr int kIdDeviceCombo = 1001;
 constexpr int kIdRefreshButton = 1002;
@@ -29,6 +31,11 @@ constexpr int kIdConnectButton = 1003;
 constexpr int kIdDisconnectButton = 1004;
 constexpr int kIdStatusLabel = 1005;
 constexpr int kIdDetailLabel = 1006;
+constexpr int kIdTrayOpen = 2001;
+constexpr int kIdTrayRefresh = 2002;
+constexpr int kIdTrayConnect = 2003;
+constexpr int kIdTrayDisconnect = 2004;
+constexpr int kIdTrayExit = 2005;
 
 struct DeviceEntry
 {
@@ -46,6 +53,9 @@ struct AppState
     HWND statusLabel{};
     HWND detailLabel{};
     HFONT font{};
+    HICON trayIcon{};
+    bool trayIconAdded{ false };
+    bool quitRequested{ false };
 
     std::vector<DeviceEntry> devices;
     audio::AudioPlaybackConnection connection{ nullptr };
@@ -111,6 +121,89 @@ void SetStatus(AppState& state, std::wstring const& status, std::wstring const& 
 {
     SetText(state.statusLabel, status);
     SetText(state.detailLabel, detail);
+}
+
+NOTIFYICONDATAW BuildTrayIconData(AppState const& state)
+{
+    NOTIFYICONDATAW trayData{};
+    trayData.cbSize = sizeof(trayData);
+    trayData.hWnd = state.window;
+    trayData.uID = kTrayIconId;
+    trayData.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    trayData.uCallbackMessage = kMsgTrayIcon;
+    trayData.hIcon = state.trayIcon;
+    wcscpy_s(trayData.szTip, kWindowTitle);
+    return trayData;
+}
+
+void AddTrayIcon(AppState& state)
+{
+    if (state.trayIconAdded)
+    {
+        return;
+    }
+
+    auto trayData = BuildTrayIconData(state);
+    state.trayIconAdded = Shell_NotifyIconW(NIM_ADD, &trayData) == TRUE;
+}
+
+void RemoveTrayIcon(AppState& state)
+{
+    if (!state.trayIconAdded)
+    {
+        return;
+    }
+
+    auto trayData = BuildTrayIconData(state);
+    Shell_NotifyIconW(NIM_DELETE, &trayData);
+    state.trayIconAdded = false;
+}
+
+void ShowMainWindow(AppState& state)
+{
+    ShowWindow(state.window, SW_SHOWNORMAL);
+    SetForegroundWindow(state.window);
+}
+
+void HideMainWindow(AppState& state)
+{
+    ShowWindow(state.window, SW_HIDE);
+}
+
+void ToggleMainWindow(AppState& state)
+{
+    if (IsWindowVisible(state.window))
+    {
+        HideMainWindow(state);
+    }
+    else
+    {
+        ShowMainWindow(state);
+    }
+}
+
+void ShowTrayMenu(AppState& state)
+{
+    HMENU const menu = CreatePopupMenu();
+    if (!menu)
+    {
+        return;
+    }
+
+    auto const hasSelection = SendMessageW(state.deviceCombo, CB_GETCURSEL, 0, 0) != CB_ERR;
+
+    AppendMenuW(menu, MF_STRING, kIdTrayOpen, IsWindowVisible(state.window) ? L"Hide Window" : L"Open Window");
+    AppendMenuW(menu, MF_STRING, kIdTrayRefresh, L"Refresh Devices");
+    AppendMenuW(menu, MF_STRING | (hasSelection && !state.busy ? MF_ENABLED : MF_GRAYED), kIdTrayConnect, L"Connect Selected");
+    AppendMenuW(menu, MF_STRING | (state.connected && !state.busy ? MF_ENABLED : MF_GRAYED), kIdTrayDisconnect, L"Disconnect");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kIdTrayExit, L"Exit");
+
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    SetForegroundWindow(state.window);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN, cursor.x, cursor.y, 0, state.window, nullptr);
+    DestroyMenu(menu);
 }
 
 std::wstring SelectedDeviceId(AppState& state)
@@ -352,6 +445,7 @@ void ApplyDefaultFont(HWND window, HFONT font)
 void CreateChildControls(AppState& state, HINSTANCE instance)
 {
     state.font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    state.trayIcon = LoadIconW(nullptr, IDI_APPLICATION);
 
     state.deviceCombo = CreateWindowExW(
         0,
@@ -427,6 +521,12 @@ void CreateChildControls(AppState& state, HINSTANCE instance)
     ApplyDefaultFont(state.detailLabel, state.font);
 }
 
+void RequestExit(AppState& state)
+{
+    state.quitRequested = true;
+    DestroyWindow(state.window);
+}
+
 LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -442,6 +542,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         auto* storedState = GetState(window);
         if (storedState)
         {
+            AddTrayIcon(*storedState);
             SetStatus(*storedState, L"Ready", L"Searching for playback devices...");
             RefreshDevicesAsync(window);
         }
@@ -465,18 +566,47 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             return 0;
         case kIdRefreshButton:
+        case kIdTrayRefresh:
             RefreshDevicesAsync(window);
             return 0;
         case kIdConnectButton:
+        case kIdTrayConnect:
             ConnectAsync(window);
             return 0;
         case kIdDisconnectButton:
+        case kIdTrayDisconnect:
             DisconnectCurrent(*state, true);
             UpdateControlStates(*state);
+            return 0;
+        case kIdTrayOpen:
+            ToggleMainWindow(*state);
+            return 0;
+        case kIdTrayExit:
+            RequestExit(*state);
             return 0;
         default:
             return 0;
         }
+    }
+    case WM_SIZE:
+    {
+        auto* state = GetState(window);
+        if (state && wParam == SIZE_MINIMIZED)
+        {
+            HideMainWindow(*state);
+            return 0;
+        }
+        break;
+    }
+    case WM_CLOSE:
+    {
+        auto* state = GetState(window);
+        if (state && !state->quitRequested)
+        {
+            HideMainWindow(*state);
+            return 0;
+        }
+        break;
     }
     case kMsgConnectionStateChanged:
     {
@@ -488,11 +618,33 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         return 0;
     }
+    case kMsgTrayIcon:
+    {
+        auto* state = GetState(window);
+        if (!state)
+        {
+            return 0;
+        }
+
+        switch (LOWORD(lParam))
+        {
+        case WM_LBUTTONDBLCLK:
+            ToggleMainWindow(*state);
+            return 0;
+        case WM_RBUTTONUP:
+        case WM_CONTEXTMENU:
+            ShowTrayMenu(*state);
+            return 0;
+        default:
+            return 0;
+        }
+    }
     case WM_DESTROY:
     {
         auto* state = GetState(window);
         if (state)
         {
+            RemoveTrayIcon(*state);
             DisconnectCurrent(*state, false);
         }
 
@@ -507,8 +659,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     default:
-        return DefWindowProcW(window, message, wParam, lParam);
+        break;
     }
+
+    return DefWindowProcW(window, message, wParam, lParam);
 }
 } // namespace
 
@@ -526,6 +680,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     windowClass.cbSize = sizeof(WNDCLASSEXW);
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance;
+    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     windowClass.lpszClassName = kWindowClassName;

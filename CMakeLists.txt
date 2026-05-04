@@ -26,5 +26,6 @@ endif()
 
 target_link_libraries(bluetooth_audio_sink PRIVATE
     comctl32
+    shell32
     windowsapp
 )
